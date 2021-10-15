@@ -1,2 +1,3 @@
 # lirc-event-changer
-Lirc event changer service for Kodi
+
+Lirc event changer service for Libreelec/Kodi.
