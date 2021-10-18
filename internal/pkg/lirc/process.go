@@ -1,6 +1,7 @@
 package lirc
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -34,7 +35,7 @@ func parseEvent(str string) (*Event, error) {
 	return res, nil
 }
 
-func NewPuller(r io.Reader, closeCh <-chan bool, errCh chan<- error) <-chan string {
+func NewPuller(ctx context.Context, r io.Reader, errCh chan<- error) <-chan string {
 	logrus.Infof("Init pooler")
 	res := make(chan string, 2)
 	clInnerCh := make(chan bool)
@@ -53,7 +54,7 @@ func NewPuller(r io.Reader, closeCh <-chan bool, errCh chan<- error) <-chan stri
 	go func() {
 		defer close(res)
 		select {
-		case <-closeCh:
+		case <-ctx.Done():
 		case <-clInnerCh:
 		}
 		logrus.Infof("Exit pooler")

@@ -1,6 +1,7 @@
 package lirc
 
 import (
+	"context"
 	"io"
 	"net"
 	"strings"
@@ -14,12 +15,14 @@ import (
 type writers struct {
 	wArray []chan<- string
 	lock   *sync.Mutex
+	wg     *sync.WaitGroup
 }
 
 func newData() *writers {
 	res := writers{}
 	res.wArray = make([]chan<- string, 0)
 	res.lock = &sync.Mutex{}
+	res.wg = &sync.WaitGroup{}
 	return &res
 }
 
@@ -32,6 +35,7 @@ func (w *writers) getWriters() []chan<- string {
 func (w *writers) add(ch chan<- string) {
 	w.lock.Lock()
 	defer w.lock.Unlock()
+	w.wg.Add(1)
 	w.wArray = append(w.wArray, ch)
 	logrus.Infof("Add conn. Total %d", len(w.wArray))
 }
@@ -39,6 +43,7 @@ func (w *writers) add(ch chan<- string) {
 func (w *writers) remove(ch chan<- string) {
 	w.lock.Lock()
 	defer w.lock.Unlock()
+	defer w.wg.Done()
 	cp := w.wArray
 	w.wArray = nil
 	for _, cht := range cp {
@@ -49,23 +54,37 @@ func (w *writers) remove(ch chan<- string) {
 	logrus.Infof("Drop conn. Remaining %d", len(w.wArray))
 }
 
-func StartService(l net.Listener, closeCh <-chan bool) chan<- string {
+func StartService(ctx context.Context, l net.Listener) (chan<- string, func() <-chan struct{}) {
 	data := newData()
-	go func () {
+	go func() {
 		for {
 			con, err := l.Accept()
 			if err != nil {
-				logrus.Error(errors.Wrap(err, "can't accept connection"))
-				continue					
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					logrus.Error(errors.Wrap(err, "can't accept connection"))
+					continue
+				}
 			}
 			logrus.Infof("New connection %s", con.LocalAddr().String())
-			go listen(con, data, closeCh)
+			go listen(ctx, con, data)
 		}
-	} ()
-	return pushChannel(data, closeCh)
+	}()
+	return pushChannel(ctx, data), func() <-chan struct{} { return doneFunc(data) }
 }
 
-func pushChannel(wr *writers, closeCh <- chan bool) chan<- string {
+func doneFunc(wr *writers) <-chan struct{} {
+	res := make(chan struct{})
+	go func() {
+		wr.wg.Wait()
+		close(res)
+	}()
+	return res
+}
+
+func pushChannel(ctx context.Context, wr *writers) chan<- string {
 	res := make(chan string, 2)
 	go func() {
 		for {
@@ -78,7 +97,7 @@ func pushChannel(wr *writers, closeCh <- chan bool) chan<- string {
 						logrus.Error(errors.New("write timeout"))
 					}
 				}
-			case <-closeCh:
+			case <-ctx.Done():
 				logrus.Info("Exit write loop")
 				return
 			}
@@ -87,7 +106,7 @@ func pushChannel(wr *writers, closeCh <- chan bool) chan<- string {
 	return res
 }
 
-func listen(con io.WriteCloser, data *writers, closeCh <-chan bool) {
+func listen(ctx context.Context, con io.WriteCloser, data *writers) {
 	defer con.Close()
 	wrCh := make(chan string, 2)
 	data.add(wrCh)
@@ -101,7 +120,7 @@ func listen(con io.WriteCloser, data *writers, closeCh <-chan bool) {
 				return
 			}
 			logrus.Infof("Wrote %d bytes", n)
-		case <-closeCh:
+		case <-ctx.Done():
 			return
 		}
 	}

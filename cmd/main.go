@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"os"
 	"os/signal"
@@ -33,13 +34,13 @@ func main() {
 		panic(err)
 	}
 	defer ln.Close()
-	
+
 	/////////////////////////////////////////////////////////////
 	errCh := make(chan error, 2)
-	closeCh := make(chan bool)
-	pullCh := lirc.NewPuller(sIn, closeCh, errCh)
+	appCtx, cancelFunc := context.WithCancel(context.Background())
+	pullCh := lirc.NewPuller(appCtx, sIn, errCh)
 	outCh := lirc.NewLogger(lirc.ToString(lirc.Mapper(lirc.NewParser(lirc.NewLogger(pullCh, "In: ")))), "Out: ")
-	writeCh := lirc.StartService(ln, closeCh)
+	writeCh, srvDoneFunc := lirc.StartService(appCtx, ln)
 	go passData(outCh, writeCh)
 	/////////////////////////////////////////////////////////////
 
@@ -52,12 +53,13 @@ func main() {
 	case err := <-errCh:
 		panic(errors.Wrapf(err, "Listen error"))
 	}
-	close(closeCh)
-	select{
-		case 
+	cancelFunc()
+	select {
+	case <-srvDoneFunc():
+		logrus.Info("Exit lirc changer")
+	case <-time.After(time.Second):
+		logrus.Warn("Timeout gracefull shutdown")
 	}
-	time.Sleep(time.Second)
-	logrus.Info("Exiting the lirc changer")
 }
 
 func passData(in <-chan string, out chan<- string) {
